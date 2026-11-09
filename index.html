@@ -996,7 +996,7 @@
             <div class="wx-grid">
               <div class="wx-chip"><div class="k">Air Temp</div><div class="v" id="currentAirTemp">--</div></div>
               <div class="wx-chip"><div class="k">Humidity</div><div class="v" id="currentHumidity">--</div></div>
-              <div class="wx-chip"><div class="k">Wind</div><div class="v" id="currentWind">--</div></div>
+              <div class="wx-chip"><label class="k" for="currentWind">Wind (mph) · Editable</label><input class="v" id="currentWind" type="number" min="0" max="150" step="0.1" inputmode="decimal" aria-label="Wind speed in miles per hour" style="width:100%;min-width:0;box-sizing:border-box;color:#111;background:#fff;border:1px solid #999;border-radius:5px;padding:4px 6px;" placeholder="--"><button type="button" id="resetWind" style="margin-top:5px;font-size:11px;padding:3px 6px;">Use forecast wind</button></div>
               <div class="wx-chip wx-chip-concrete-temp"><div class="k">Concrete Temp</div><div class="v" id="currentConcreteTemp">--</div></div>
             </div>
             <div class="note" id="panelNote">Using live weather near the corrected jobsite address and the concrete temperature shown above.</div>
@@ -1174,6 +1174,7 @@
       currentAirTemp: document.getElementById('currentAirTemp'),
       currentHumidity: document.getElementById('currentHumidity'),
       currentWind: document.getElementById('currentWind'),
+      resetWind: document.getElementById('resetWind'),
       currentConcreteTemp: document.getElementById('currentConcreteTemp'),
       bars: document.getElementById('bars'),
     };
@@ -1181,6 +1182,7 @@
     let activeCustomer = null;
     let activeUser = null;
     let latestWeather = null;
+    let manualWindMph = null; // null means use forecast wind
     let latestRows = [];
     let validatedPlace = null;
     let validatedLandingPlace = null;
@@ -3160,13 +3162,13 @@ function buildTruckCycleForOrder(order, truckAvailability) {
           concreteTemp,
           data.hourly.temperature_2m[i],
           data.hourly.relative_humidity_2m[i],
-          data.hourly.wind_speed_10m[i]
+          manualWindMph === null ? data.hourly.wind_speed_10m[i] : manualWindMph
         );
         return {
           time,
           airF: Number(data.hourly.temperature_2m[i]),
           rh: Number(data.hourly.relative_humidity_2m[i]),
-          wind: Number(data.hourly.wind_speed_10m[i]),
+          wind: manualWindMph === null ? Number(data.hourly.wind_speed_10m[i]) : manualWindMph,
           rate
         };
       });
@@ -3196,9 +3198,10 @@ function buildTruckCycleForOrder(order, truckAvailability) {
       els.panelRisk.textContent = currentRisk.label;
       els.currentAirTemp.textContent = fmtTemp(current.airF);
       els.currentHumidity.textContent = fmtRh(current.rh);
-      els.currentWind.textContent = fmtWind(current.wind);
+      if (document.activeElement !== els.currentWind) els.currentWind.value = Number.isFinite(current.wind) ? Number(current.wind).toFixed(1) : '';
+      if (els.resetWind) els.resetWind.disabled = manualWindMph === null;
       els.currentConcreteTemp.textContent = fmtTemp(concreteTemp);
-      els.panelNote.textContent = usingCustomerOrder
+      els.panelNote.textContent = manualWindMph !== null ? 'Using manually entered wind speed (' + manualWindMph.toFixed(1) + ' mph) for evaporation estimates and the hourly chart. Select Use forecast wind to restore weather data.' : usingCustomerOrder
         ? ('Using order address and concrete temperature for the requested delivery time of ' + requestedLabel + '.')
         : 'Using validated landing-page jobsite address and live weather for the evaporation calculator.';
       els.siteCity.textContent = displayPlace || 'Jobsite';
@@ -3555,6 +3558,32 @@ function buildTruckCycleForOrder(order, truckAvailability) {
         }, 120);
       });
     }
+    if (els.currentWind) {
+      els.currentWind.addEventListener('input', () => {
+        const raw = els.currentWind.value.trim();
+        if (!raw) return; // Allow clearing while editing; reset button restores forecast.
+        const speed = Number(raw);
+        if (!Number.isFinite(speed) || speed < 0 || speed > 150) {
+          els.currentWind.setCustomValidity('Enter a wind speed from 0 to 150 mph.');
+          return;
+        }
+        els.currentWind.setCustomValidity('');
+        manualWindMph = speed;
+        if (latestWeather) renderWeather(latestWeather);
+      });
+      els.currentWind.addEventListener('change', () => {
+        if (!els.currentWind.value.trim()) {
+          manualWindMph = null;
+          els.currentWind.setCustomValidity('');
+          if (latestWeather) renderWeather(latestWeather);
+        }
+      });
+    }
+    if (els.resetWind) els.resetWind.addEventListener('click', () => {
+      manualWindMph = null;
+      els.currentWind.setCustomValidity('');
+      if (latestWeather) renderWeather(latestWeather);
+    });
     if (els.landingConcreteTemp) {
       els.landingConcreteTemp.addEventListener('input', () => {
         landingConcreteTempTouched = true;
