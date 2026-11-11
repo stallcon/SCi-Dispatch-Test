@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>SCI Dispatch App REV.104</title>
+  <title>SCI Dispatch App REV.105</title>
   <style>
     :root {
       --bg: #0c0c0c;
@@ -957,9 +957,10 @@
         <div class="card-body">
           <div class="field" style="margin-bottom:12px;">
             <label for="landingJobsiteAddress">Jobsite Address</label>
-            <div style="display:flex;gap:8px;align-items:center;">
-              <input id="landingJobsiteAddress" value="11740 Military Trail Rd, St George, KS 66535" autocomplete="off" />
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <input id="landingJobsiteAddress" value="11740 Military Trail Rd, St George, KS 66535" autocomplete="street-address" style="flex:1 1 190px;min-width:0;" />
               <button id="landingAddressSearchBtn" class="btn ghost" type="button">Search</button>
+              <button id="landingUseLocationBtn" class="btn ghost" type="button">Use My Location</button>
             </div>
             <div class="suggestions" id="landingAddressSuggestions"></div>
             <div class="helper" id="landingAddressValidation">Landing-page calculator address only. This does not change customer portal order calculations.</div>
@@ -1140,6 +1141,7 @@
       addressSearchBtn: document.getElementById('addressSearchBtn'),
       landingJobsiteAddress: document.getElementById('landingJobsiteAddress'),
       landingAddressSearchBtn: document.getElementById('landingAddressSearchBtn'),
+      landingUseLocationBtn: document.getElementById('landingUseLocationBtn'),
       landingAddressSuggestions: document.getElementById('landingAddressSuggestions'),
       landingAddressValidation: document.getElementById('landingAddressValidation'),
       landingConcreteTemp: document.getElementById('landingConcreteTemp'),
@@ -1186,6 +1188,8 @@
     let latestRows = [];
     let validatedPlace = null;
     let validatedLandingPlace = null;
+    let landingGpsRequest = 0;
+    let landingGpsPending = false;
     let landingAddressDebounce = null;
     let refreshTimer = null;
     let suggestionTimer = null;
@@ -3367,6 +3371,61 @@ function buildTruckCycleForOrder(order, truckAvailability) {
       }
     }
 
+    function useLandingDeviceLocation() {
+      if (!els.landingUseLocationBtn || !els.landingAddressValidation) return;
+      if (!navigator.geolocation || !window.isSecureContext) {
+        els.landingAddressValidation.textContent = 'Device location requires an HTTPS connection and browser location support. You can enter an address instead.';
+        els.landingAddressValidation.style.color = '#b02121';
+        return;
+      }
+      const request = ++landingGpsRequest;
+      ++activeRequestToken;
+      clearTimeout(landingAddressDebounce);
+      clearTimeout(refreshTimer);
+      landingGpsPending = true;
+      els.landingUseLocationBtn.disabled = true;
+      els.landingAddressValidation.textContent = 'Requesting permission to use your current location…';
+      els.landingAddressValidation.style.color = '#9a7b00';
+      navigator.geolocation.getCurrentPosition(async position => {
+        if (request !== landingGpsRequest) return;
+        landingGpsPending = false;
+        els.landingUseLocationBtn.disabled = false;
+        const lat = Number(position.coords.latitude), lon = Number(position.coords.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        const gpsLabel = 'GPS ' + lat.toFixed(5) + ', ' + lon.toFixed(5);
+        validatedLandingPlace = { lat, lon, name:gpsLabel, display_name:gpsLabel };
+        els.landingJobsiteAddress.value = gpsLabel;
+        showLandingSuggestions([]);
+        els.landingAddressValidation.textContent = 'GPS position detected. Loading weather. Nearest street address may be approximate.';
+        els.landingAddressValidation.style.color = '#2d6a4f';
+        scheduleWeatherRefresh();
+        try {
+          const response = await fetch('https://nominatim.openstreetmap.org/reverse?' + new URLSearchParams({
+            format:'jsonv2',lat:String(lat),lon:String(lon),zoom:'18',addressdetails:'1'
+          }).toString(), {headers:{'Accept':'application/json'}});
+          if (!response.ok) throw new Error('Reverse address lookup unavailable');
+          const place = await response.json();
+          if (request !== landingGpsRequest) return;
+          if (place && place.display_name) {
+            validatedLandingPlace = {...place,lat,lon};
+            els.landingJobsiteAddress.value = formatShortAddress(validatedLandingPlace);
+            els.landingAddressValidation.textContent = 'GPS location selected. Verify nearest address: ' + els.landingJobsiteAddress.value;
+            scheduleWeatherRefresh();
+          }
+        } catch (err) {
+          if (request === landingGpsRequest) els.landingAddressValidation.textContent = 'GPS weather location selected. Nearest address lookup unavailable; coordinates are still in use.';
+        }
+      }, error => {
+        if (request !== landingGpsRequest) return;
+        landingGpsPending = false;
+        els.landingUseLocationBtn.disabled = false;
+        els.landingAddressValidation.textContent = error.code === 1
+          ? 'Location access denied. Enter a jobsite address or allow location in your device settings.'
+          : 'Device location unavailable. Enter the jobsite address manually.';
+        els.landingAddressValidation.style.color = '#b02121';
+      }, { enableHighAccuracy:true, timeout:12000, maximumAge:60000 });
+    }
+
     function scheduleAddressLookup() {
       clearTimeout(suggestionTimer);
       suggestionTimer = setTimeout(() => resolveAddressFromInput(false), 1000);
@@ -3542,6 +3601,8 @@ function buildTruckCycleForOrder(order, truckAvailability) {
     });
     if (els.landingJobsiteAddress) {
       els.landingJobsiteAddress.addEventListener('input', () => {
+        ++landingGpsRequest;
+        landingGpsPending = false;
         validatedLandingPlace = null;
         if (els.landingAddressValidation) {
           els.landingAddressValidation.textContent = 'Searching maps for the best address match…';
@@ -3553,6 +3614,7 @@ function buildTruckCycleForOrder(order, truckAvailability) {
       });
       els.landingJobsiteAddress.addEventListener('blur', () => {
         setTimeout(() => {
+          if (landingGpsPending) return;
           clearTimeout(landingAddressDebounce);
           if (els.landingJobsiteAddress.value.trim()) resolveLandingAddressFromInput(true);
         }, 120);
@@ -3594,6 +3656,7 @@ function buildTruckCycleForOrder(order, truckAvailability) {
       });
     }
 
+    if (els.landingUseLocationBtn) els.landingUseLocationBtn.addEventListener('click', useLandingDeviceLocation);
     if (els.landingAddressSearchBtn) {
       els.landingAddressSearchBtn.addEventListener('click', (event) => {
         event.preventDefault();
